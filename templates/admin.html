@@ -1,0 +1,390 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Admin · G School</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
+  <style>
+    body { max-width:1200px; margin:auto; padding:1rem }
+    body, label, h3, h4, .mini, button, .btn { color:#000 !important; }
+    table { width:100%; border-collapse:collapse; margin-top:10px }
+    th, td { border:1px solid #ccc; padding:6px; text-align:left }
+    td input[type="url"] { width:100% }
+  </style>
+</head>
+<body>
+<nav>
+  <ul><li><strong>Admin</strong></li></ul>
+  <ul><li><a href="/teacher">Teacher</a></li><li><a href="/logout">Logout</a></li></ul>
+</nav>
+
+<h3>Settings</h3>
+<article>
+  <label>Default Blocked Redirect URL 
+    <input id="blocked" type="url" value="{{ data.settings.blocked_redirect|default('https://blocked.gdistrict.org/Gschool%20block') }}">
+  </label>
+  <label>
+    <input id="chat" type="checkbox" {{ 'checked' if data.settings.chat_enabled|default(False) else '' }}>
+    Enable Chat
+  </label>
+  <label>Extension Passcode
+    <input id="passcode" type="password" placeholder="admin1234">
+  </label>
+  <label>
+    <input id="bypassEnabled" type="checkbox" {{ 'checked' if data.settings.bypass_enabled|default(False) else '' }}>
+    Enable Bypass Override on Block Pages
+  </label>
+  <label>Bypass Code
+    <input id="bypassCode" type="password" value="{{ data.settings.bypass_code|default('') }}" placeholder="e.g. secret123">
+  </label>
+  <label>Bypass Duration (minutes)
+    <input id="bypassTTL" type="number" min="1" max="1440" value="{{ data.settings.bypass_ttl_minutes|default(10) }}">
+  </label>
+  <button id="save">Save</button>
+  <small id="msg" style="margin-left:8px"></small>
+</article>
+
+<h3>Categories (AI-powered)</h3>
+<article>
+  <table>
+    <thead>
+      <tr><th>Category</th><th>Blocked?</th><th>Block Page</th><th>Save</th></tr>
+    </thead>
+    <tbody id="cats"></tbody>
+  </table>
+  <small id="catMsg" class="mini"></small>
+</article>
+
+<h4>Category Schedules (auto block/unblock)</h4>
+<article>
+  <p class="mini">
+    Use schedules to automatically turn category blocking <b>on</b> and <b>off</b> at specific times.
+    When a schedule is enabled for a category, it overrides the manual “Blocked?” toggle.
+  </p>
+  <div style="display:flex; flex-wrap:wrap; gap:1rem; align-items:flex-end">
+    <label>
+      Category
+      <select id="schedCategory"></select>
+    </label>
+    <label>
+      <input type="checkbox" id="schedEnabled">
+      Enable schedule for this category
+    </label>
+    <label>
+      Start time
+      <input type="time" id="schedStart">
+    </label>
+    <label>
+      End time
+      <input type="time" id="schedEnd">
+    </label>
+    <label>
+      <input type="checkbox" id="schedWeekdays">
+      Weekdays only (Mon–Fri)
+    </label>
+    <button id="saveSchedule" class="secondary">Save Schedule</button>
+    <small id="schedMsg" style="margin-left:6px"></small>
+  </div>
+</article>
+
+<h3>Manual Overrides</h3>
+<article>
+  <details open>
+    <summary>Manage Global Allow/Block Lists</summary>
+    <label>Always Allow (one URL per line)
+      <textarea id="allowlist" rows="5"></textarea>
+    </label>
+    <label>Always Block (one URL per line)
+      <textarea id="blocklist" rows="5"></textarea>
+    </label>
+    <button id="saveLists">Save Overrides</button>
+    <small id="msg2" style="margin-left:8px"></small>
+  </details>
+</article>
+
+<!-- SIMPLE USER MANAGEMENT (no loading table) -->
+<h3>Users</h3>
+<article>
+  <details open>
+    <summary>Admin &amp; Teacher Accounts</summary>
+    <p class="mini">
+      Create / update / delete sign-in accounts for the teacher and admin dashboards.
+      These accounts <b>do not</b> affect student extension logins.
+    </p>
+
+    <!-- Create / Update -->
+    <h4>Create or Update User</h4>
+    <label>Email
+      <input type="email" id="userEmail" placeholder="teacher@example.com">
+    </label>
+    <label>Password
+      <input type="password" id="userPassword" placeholder="Set or reset password">
+    </label>
+    <label>Role
+      <select id="userRole">
+        <option value="teacher">Teacher</option>
+        <option value="admin">Admin</option>
+      </select>
+    </label>
+    <button id="saveUser">Save User</button>
+    <p id="userMsg" class="mini"></p>
+
+    <hr>
+
+    <!-- Delete -->
+    <h4>Delete User</h4>
+    <label>Email
+      <input type="email" id="deleteEmail" placeholder="teacher@example.com">
+    </label>
+    <button id="deleteUser" class="secondary">Delete User</button>
+    <p id="deleteMsg" class="mini"></p>
+  </details>
+</article>
+
+<script>
+// ============ Categories & Schedules ============
+let _latestCategories = [];
+
+function updateScheduleForm() {
+  const cats = _latestCategories || [];
+  const sel = document.getElementById('schedCategory');
+  if (!sel) return;
+
+  let selectedName = sel.value;
+  if (!selectedName && cats.length) {
+    selectedName = cats[0].name;
+    sel.value = selectedName;
+  }
+
+  const cat = cats.find(c => c.name === selectedName) || {};
+  const sched = cat.schedule || null;
+
+  const enabledEl = document.getElementById('schedEnabled');
+  const startEl = document.getElementById('schedStart');
+  const endEl = document.getElementById('schedEnd');
+  const weekdaysEl = document.getElementById('schedWeekdays');
+  if (!enabledEl || !startEl || !endEl || !weekdaysEl) return;
+
+  enabledEl.checked = !!(sched && sched.enabled);
+  startEl.value = (sched && sched.start) || "";
+  endEl.value = (sched && sched.end) || "";
+  weekdaysEl.checked = !!(sched && sched.weekdays_only);
+}
+
+async function refresh(){
+  const catMsg = document.getElementById('catMsg');
+  const tbody = document.getElementById('cats');
+  if (tbody) tbody.innerHTML = '';
+
+  // 1) Categories from AI API (if available)
+  try {
+    const res = await fetch('/api/ai/categories');
+    if (!res.ok) throw new Error('AI categories unavailable');
+    const j = await res.json();
+    const cats = j.categories || [];
+    _latestCategories = cats;
+
+    if (tbody) {
+      if (!cats.length) {
+        tbody.innerHTML = '<tr><td colspan="4">No AI categories yet.</td></tr>';
+      } else {
+        cats.forEach(c=>{
+          const tr = document.createElement('tr');
+          tr.innerHTML = `
+            <td><b>${c.name}</b></td>
+            <td><input type="checkbox" ${c.blocked ? 'checked' : ''} data-name="${c.name}" class="blk"></td>
+            <td><input type="url" value="${c.block_url || ''}" data-name="${c.name}" class="bp"></td>
+            <td><button data-name="${c.name}" class="saveCat">Save</button></td>
+          `;
+          tbody.appendChild(tr);
+        });
+      }
+    }
+
+    // Populate schedule category dropdown
+    const sel = document.getElementById('schedCategory');
+    if (sel) {
+      const prev = sel.value;
+      sel.innerHTML = '';
+      cats.forEach(c=>{
+        const opt = document.createElement('option');
+        opt.value = c.name;
+        opt.textContent = c.name;
+        sel.appendChild(opt);
+      });
+      if (prev && cats.some(c=>c.name===prev)) {
+        sel.value = prev;
+      }
+      updateScheduleForm();
+    }
+
+    if (catMsg) catMsg.textContent = '';
+  } catch (err) {
+    console.warn('Category load failed', err);
+    if (tbody && !tbody.innerHTML) {
+      tbody.innerHTML = '<tr><td colspan="4">AI categorization not available.</td></tr>';
+    }
+    if (catMsg) catMsg.textContent = 'AI categories are temporarily unavailable.';
+  }
+
+  // 2) Global overrides
+  try {
+    const o = await (await fetch('/api/overrides')).json();
+    document.getElementById('allowlist').value = (o.allowlist || []).join("\n");
+    document.getElementById('blocklist').value = (o.teacher_blocks || []).join("\n");
+  } catch (e) {
+    console.error('Overrides load error', e);
+  }
+}
+refresh();
+
+// Save global settings
+document.getElementById('save').onclick = async()=>{
+  const body = {
+    blocked_redirect: document.getElementById('blocked').value,
+    chat_enabled: document.getElementById('chat').checked,
+    passcode: document.getElementById('passcode').value,
+    bypass_enabled: document.getElementById('bypassEnabled').checked,
+    bypass_code: document.getElementById('bypassCode').value,
+    bypass_ttl_minutes: parseInt(document.getElementById('bypassTTL').value || '10', 10)
+  };
+  const r = await fetch('/api/settings',{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify(body)
+  });
+  document.getElementById('msg').textContent = r.ok ? 'Saved' : 'Error';
+  setTimeout(()=>document.getElementById('msg').textContent='',1500);
+};
+
+// Save individual category
+document.addEventListener('click', async(e)=>{
+  if(e.target.classList.contains('saveCat')){
+    const name = e.target.dataset.name;
+    const chk = document.querySelector('.blk[data-name="'+name+'"]');
+    const inp = document.querySelector('.bp[data-name="'+name+'"]');
+    if (!chk || !inp) return;
+    const blocked = chk.checked;
+    const block_url = inp.value;
+    const body = {name, blocked, block_url};
+    const r = await fetch('/api/ai/categories',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify(body)
+    });
+    alert(r.ok ? 'Saved!' : 'Error saving category');
+    refresh();
+  }
+});
+
+// Save schedule for selected category
+const schedCategoryEl = document.getElementById('schedCategory');
+const saveScheduleBtn = document.getElementById('saveSchedule');
+if (schedCategoryEl && saveScheduleBtn) {
+  schedCategoryEl.addEventListener('change', updateScheduleForm);
+  saveScheduleBtn.onclick = async()=>{
+    const name = schedCategoryEl.value;
+    if (!name) return;
+    const schedule = {
+      enabled: document.getElementById('schedEnabled').checked,
+      start: document.getElementById('schedStart').value || null,
+      end: document.getElementById('schedEnd').value || null,
+      weekdays_only: document.getElementById('schedWeekdays').checked
+    };
+    const body = { name, schedule };
+    const r = await fetch('/api/ai/categories',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(body)
+    });
+    const msgEl = document.getElementById('schedMsg');
+    if (msgEl) {
+      msgEl.textContent = r.ok ? 'Schedule saved' : 'Error saving schedule';
+      setTimeout(()=>{ msgEl.textContent=''; }, 2000);
+    }
+    if (r.ok) {
+      refresh();
+    }
+  };
+}
+
+// Save manual overrides
+document.getElementById('saveLists').onclick = async()=>{
+  const allowlist = document.getElementById('allowlist').value
+    .split("\n").map(s=>s.trim()).filter(Boolean);
+  const teacher_blocks = document.getElementById('blocklist').value
+    .split("\n").map(s=>s.trim()).filter(Boolean);
+  const body = {allowlist, teacher_blocks};
+  const r = await fetch('/api/overrides',{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify(body)
+  });
+  document.getElementById('msg2').textContent = r.ok ? 'Saved' : 'Error';
+  setTimeout(()=>document.getElementById('msg2').textContent='',1500);
+};
+
+// ============ SIMPLE USER MANAGEMENT (like login) ============
+
+// Create / update user
+document.getElementById('saveUser').onclick = async ()=>{
+  const email = document.getElementById('userEmail').value.trim().toLowerCase();
+  const password = document.getElementById('userPassword').value;
+  const role = document.getElementById('userRole').value || 'teacher';
+  const msgEl = document.getElementById('userMsg');
+
+  if (!email || !password) {
+    msgEl.textContent = 'Email and password are required';
+    msgEl.style.color = 'crimson';
+    return;
+  }
+
+  const r = await fetch('/api/users', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ email, password, role })
+  });
+
+  if (r.ok) {
+    msgEl.textContent = 'User saved';
+    msgEl.style.color = 'green';
+    document.getElementById('userPassword').value = '';
+  } else {
+    const t = await r.text();
+    msgEl.textContent = 'Error: ' + (t || 'could not save user');
+    msgEl.style.color = 'crimson';
+  }
+};
+
+// Delete user
+document.getElementById('deleteUser').onclick = async ()=>{
+  const email = document.getElementById('deleteEmail').value.trim().toLowerCase();
+  const msgEl = document.getElementById('deleteMsg');
+
+  if (!email) {
+    msgEl.textContent = 'Email is required';
+    msgEl.style.color = 'crimson';
+    return;
+  }
+
+  if (!confirm('Delete user ' + email + '? This cannot be undone.')) return;
+
+  const r = await fetch('/api/users/delete', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ email })
+  });
+
+  if (r.ok) {
+    msgEl.textContent = 'User deleted (if it existed)';
+    msgEl.style.color = 'green';
+  } else {
+    const t = await r.text();
+    msgEl.textContent = 'Error: ' + (t || 'could not delete user');
+    msgEl.style.color = 'crimson';
+  }
+};
+</script>
+</body>
+</html>
